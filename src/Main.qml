@@ -241,6 +241,28 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "Alt+Shift+Left"
+        context: Qt.ApplicationShortcut
+        enabled: win.editing
+        onActivated: { player.pause(); backend.stepFrame(editBar.playheadSec, -1); }
+    }
+
+    Shortcut {
+        sequence: "Alt+Shift+Right"
+        context: Qt.ApplicationShortcut
+        enabled: win.editing
+        onActivated: { player.pause(); backend.stepFrame(editBar.playheadSec, 1); }
+    }
+
+    Connections {
+        target: backend
+        function onFrameStepped(from, to) {
+            if (win.editing && !win.playing() && Math.abs(editBar.playheadSec - from) < 0.000001)
+                win.seekTo(to);
+        }
+    }
+
+    Shortcut {
         sequence: "["
         context: Qt.ApplicationShortcut
         enabled: win.editing
@@ -947,6 +969,7 @@ ApplicationWindow {
                         { keys: "← / →", action: "Move playhead 1s" },
                         { keys: "Shift ← / →", action: "Move playhead 5s" },
                         { keys: "Alt ← / →", action: "Move playhead 0.2s" },
+                        { keys: "Alt Shift ← / →", action: "Move playhead one frame" },
                         { keys: "[ / ]", action: "Previous / next clip edge" },
                         { keys: "S", action: "Split the clip at the playhead" },
                         { keys: "X", action: "Remove the clip" },

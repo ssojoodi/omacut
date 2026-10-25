@@ -159,6 +159,7 @@ public:
     }
     Q_INVOKABLE QUrl suggestedExportUrl() const { return {}; }
     Q_INVOKABLE void saveFrame(double) {}
+    Q_INVOKABLE void stepFrame(double t, int direction) { emit frameStepped(t, t + direction * 0.04); }
     Q_INVOKABLE bool addVideos(const QVariantList &, double) { return false; }
 
     void announceInfo() {
@@ -191,6 +192,7 @@ signals:
     void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
+    void frameStepped(double from, double to);
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
@@ -267,6 +269,7 @@ private slots:
     void exportDialogDelegatesSuggestedUrl();
     void suggestedExportUrlAlwaysUsesMp4();
     void exportClipWritesMp4();
+    void frameStepsFollowPresentationTimes();
     void saveFrameWritesPngBesideTheSource();
     void saveFrameSquaresStretchedPixels();
     void shownFrameIsTheLastToStartByThen();
@@ -729,6 +732,60 @@ void BackendTests::suggestedExportUrlAlwaysUsesMp4() {
 
     QCOMPARE(backend.suggestedExportUrl(),
              QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("renamed-source_trimmed.mp4"))));
+}
+
+void BackendTests::frameStepsFollowPresentationTimes() {
+    const QString path = m_dir.filePath(QStringLiteral("step-vfr.mkv"));
+    QProcess proc;
+    // Irregular presentation times, with B-frame reordering in the file.
+    proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), {
+        "-v", "error", "-f", "lavfi", "-i", "testsrc=size=32x32:rate=10:duration=1",
+        "-vf", "select='eq(n,0)+eq(n,1)+eq(n,4)+eq(n,8)'",
+        "-fps_mode", "vfr", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", path
+    });
+    QVERIFY(proc.waitForFinished(10000));
+    QCOMPARE(proc.exitCode(), 0);
+    const auto times = ffmpeg::frameTimes(path, 0);
+    QCOMPARE(times, (QList<double>{0.0, 0.1, 0.4, 0.8}));
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QVERIFY(backend.load(QUrl::fromLocalFile(path)));
+    waitForProbe(backend);
+    QSignalSpy stepped(&backend, &Backend::frameStepped);
+    const auto step = [&](double from, int direction, double expected) {
+        stepped.clear();
+        backend.stepFrame(from, direction);
+        QTRY_COMPARE_WITH_TIMEOUT(stepped.count(), 1, 10000);
+        QVERIFY(qAbs(stepped.first().at(1).toDouble() - expected) < 0.000001);
+    };
+    step(0, 1, 0.1);
+    step(0.1, 1, 0.4);
+    step(0.4, -1, 0.1);
+    step(0.6, -1, 0.1);
+    step(0, -1, 0);
+    step(backend.timeline()->duration(), 1, backend.timeline()->duration());
+    step(backend.timeline()->duration(), -1, 0.8);
+    backend.timeline()->split(0.4);
+    step(0.4, -1, 0.1);
+    step(0.1, 1, 0.4);
+    // Trimmed clips still use their source's timestamps.
+    backend.timeline()->setClip(1, 0.5, 0.9);
+    step(0.4, 1, 0.7);
+    step(0.7, -1, 0.4);
+
+    // A seek to this cut rounds up to 0.401s in the player. It must
+    // still step into the previous clip rather than returning to the cut.
+    backend.timeline()->reset(0.9);
+    backend.timeline()->split(0.4006);
+    step(0.401, -1, 0.4);
+    step(0.4, -1, 0.1);
+
+    // The last frame can start less than half a millisecond before a cut.
+    // After reaching it, the next press must leave that frame behind.
+    backend.timeline()->reset(0.9);
+    backend.timeline()->split(0.4004);
+    step(0.4004, -1, 0.4);
+    step(0.4, -1, 0.1);
 }
 
 void BackendTests::saveFrameWritesPngBesideTheSource() {
@@ -1348,6 +1405,11 @@ void BackendTests::qmlArrowKeysMoveThePlayhead() {
 
     QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 6.0, 3000);
+
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier | Qt::ShiftModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.04) < 0.000001, 3000);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier | Qt::ShiftModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
 
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 1.0, 3000);
