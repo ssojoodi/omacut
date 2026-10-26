@@ -97,6 +97,7 @@ signals:
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
     void frameStepped(double from, double to);
+    void frameStepFailed(const QString &message);
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);

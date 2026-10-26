@@ -402,7 +402,7 @@ void Backend::stepFrame(double t, int direction) {
                 if (guard->m_timeline.clips() != clips || guard->m_videos.value(clip.source).thumbKey != video.thumbKey)
                     return;
                 if (times.isEmpty()) {
-                    emit guard->frameFailed(QStringLiteral("Could not read video frame times."));
+                    emit guard->frameStepFailed(QStringLiteral("Could not read video frame times."));
                     return;
                 }
                 guard->m_videos[clip.source].frameTimes = times;

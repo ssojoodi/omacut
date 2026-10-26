@@ -9,6 +9,7 @@
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QMediaPlayer>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
@@ -193,6 +194,7 @@ signals:
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
     void frameStepped(double from, double to);
+    void frameStepFailed(const QString &message);
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
@@ -232,10 +234,18 @@ static QString mainQmlPath() {
 // as the window is in use, so each shortcut test is just the key presses.
 class QmlHarness {
 public:
-    explicit QmlHarness(QObject &backend) {
+    explicit QmlHarness(QObject &backend, bool withAudio = true) {
         m_engine.addImageProvider(QStringLiteral("thumbs"), new ThumbProvider);
         m_engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        m_engine.load(QUrl::fromLocalFile(mainQmlPath()));
+        if (withAudio) {
+            m_engine.load(QUrl::fromLocalFile(mainQmlPath()));
+        } else {
+            // Silent video tests need no connection to the desktop audio server.
+            const QString sourceDir = QUrl::fromLocalFile(QFileInfo(mainQmlPath()).absolutePath()).toString();
+            m_engine.loadData(QString("import \"%1\" as Editor\n"
+                                     "Editor.Main { function ensureAudioOutput() {} }")
+                                  .arg(sourceDir).toUtf8());
+        }
         if (!m_engine.rootObjects().isEmpty())
             m_window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
     }
@@ -270,6 +280,7 @@ private slots:
     void suggestedExportUrlAlwaysUsesMp4();
     void exportClipWritesMp4();
     void frameStepsFollowPresentationTimes();
+    void frameStepFailuresHaveTheirOwnNotice();
     void saveFrameWritesPngBesideTheSource();
     void saveFrameSquaresStretchedPixels();
     void shownFrameIsTheLastToStartByThen();
@@ -288,6 +299,7 @@ private slots:
     void qmlDoesNotCreateAudioOutputWithoutVideo();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
+    void qmlFrameStepsSurviveRoundedPlayerFeedback();
     void qmlNumberKeysJumpThroughTheEdit();
     void qmlSpaceChordsSetTheClipEdges();
     void qmlKeysSplitAndRemoveClips();
@@ -786,6 +798,33 @@ void BackendTests::frameStepsFollowPresentationTimes() {
     backend.timeline()->split(0.4004);
     step(0.4004, -1, 0.4);
     step(0.4, -1, 0.1);
+}
+
+void BackendTests::frameStepFailuresHaveTheirOwnNotice() {
+    const QString path = m_dir.filePath(QStringLiteral("step-removed.mp4"));
+    QVERIFY(QFile::copy(m_videoPath, path));
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QVERIFY(backend.load(QUrl::fromLocalFile(path)));
+    waitForProbe(backend);
+    QVERIFY(QFile::remove(path));
+    QSignalSpy stepFailed(&backend, &Backend::frameStepFailed);
+    QSignalSpy saveFailed(&backend, &Backend::frameFailed);
+    backend.stepFrame(0, 1);
+    QTRY_COMPARE_WITH_TIMEOUT(stepFailed.count() + saveFailed.count(), 1, 10000);
+    QCOMPARE(stepFailed.count(), 1);
+    QCOMPARE(saveFailed.count(), 0);
+
+    ShortcutBackend display(QUrl(), 0);
+    QmlHarness harness(display);
+    QVERIFY(harness.window());
+    const QString message = stepFailed.first().first().toString();
+    emit display.frameStepFailed(message);
+    QCOMPARE(harness.window()->property("noticeText").toString(),
+             QStringLiteral("Could not step to the frame: ") + message);
+    emit display.frameFailed(QStringLiteral("save error"));
+    QCOMPARE(harness.window()->property("noticeText").toString(),
+             QStringLiteral("Could not save the frame: save error"));
 }
 
 void BackendTests::saveFrameWritesPngBesideTheSource() {
@@ -1422,6 +1461,52 @@ void BackendTests::qmlArrowKeysMoveThePlayhead() {
     QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 5.0, 20.0}}), 3000);
+}
+
+void BackendTests::qmlFrameStepsSurviveRoundedPlayerFeedback() {
+    // MP4 retains sub-millisecond timestamps; Matroska's millisecond
+    // time base would round away the very condition being tested.
+    const QString path = m_dir.filePath(QStringLiteral("step-24fps.mp4"));
+    QProcess proc;
+    proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), {
+        "-v", "error", "-f", "lavfi", "-i", "testsrc=size=32x32:rate=24:duration=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", path
+    });
+    QVERIFY(proc.waitForFinished(10000));
+    QCOMPARE(proc.exitCode(), 0);
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QVERIFY(backend.load(QUrl::fromLocalFile(path)));
+    waitForProbe(backend);
+    backend.timeline()->setClip(0, 0, 0.1668);
+    QmlHarness harness(backend, false);
+    QVERIFY(harness.window());
+    auto *player = harness.window()->findChild<QMediaPlayer *>();
+    QVERIFY(player);
+    emit backend.infoChanged();
+    QTRY_COMPARE_WITH_TIMEOUT(player->playbackState(), QMediaPlayer::PausedState, 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(!player->property("priming").toBool(), 10000);
+    QVERIFY(QMetaObject::invokeMethod(harness.window(), "seekTo", Q_ARG(QVariant, 0.1668)));
+    QSignalSpy stepped(&backend, &Backend::frameStepped);
+    // Each step starts with the playhead produced by the real QML handler,
+    // after feeding back the player's rounded source position.
+    for (double expected : {0.166667, 0.125, 0.083333, 0.041667, 0.0}) {
+        stepped.clear();
+        backend.stepFrame(playhead(harness), -1);
+        QTRY_COMPARE_WITH_TIMEOUT(stepped.count(), 1, 10000);
+        const double resolved = stepped.first().at(1).toDouble();
+        QVERIFY(qAbs(resolved - expected) < 0.000001);
+        const qint64 rounded = qRound64(resolved * 1000);
+        player->setPosition(rounded);
+        // Emit even when the rounded position has not changed (167ms
+        // for both the clip end and its final frame).
+        emit player->positionChanged(rounded);
+        QVERIFY(qAbs(playhead(harness) - expected) < 0.000001);
+    }
+    // A subsequent ordinary seek must replace the remembered frame time.
+    QVERIFY(QMetaObject::invokeMethod(harness.window(), "seekTo", Q_ARG(QVariant, 0.1668)));
+    emit player->positionChanged(167);
+    QVERIFY(qAbs(playhead(harness) - 0.1668) < 0.000001);
 }
 
 void BackendTests::qmlSpaceChordsSetTheClipEdges() {
