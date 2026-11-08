@@ -1449,6 +1449,10 @@ void BackendTests::qmlArrowKeysMoveThePlayhead() {
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.04) < 0.000001, 3000);
     QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier | Qt::ShiftModifier);
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
+    QTest::keyClick(window, Qt::Key_Period);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.04) < 0.000001, 3000);
+    QTest::keyClick(window, Qt::Key_Comma);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
 
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 1.0, 3000);

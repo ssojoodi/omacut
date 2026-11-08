@@ -241,14 +241,14 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequence: "Alt+Shift+Left"
+        sequences: ["Alt+Shift+Left", ","]
         context: Qt.ApplicationShortcut
         enabled: win.editing
         onActivated: { player.pause(); backend.stepFrame(editBar.playheadSec, -1); }
     }
 
     Shortcut {
-        sequence: "Alt+Shift+Right"
+        sequences: ["Alt+Shift+Right", "."]
         context: Qt.ApplicationShortcut
         enabled: win.editing
         onActivated: { player.pause(); backend.stepFrame(editBar.playheadSec, 1); }
@@ -977,7 +977,7 @@ ApplicationWindow {
                         { keys: "← / →", action: "Move playhead 1s" },
                         { keys: "Shift ← / →", action: "Move playhead 5s" },
                         { keys: "Alt ← / →", action: "Move playhead 0.2s" },
-                        { keys: "Alt Shift ← / →", action: "Move playhead one frame" },
+                        { keys: ", / .", action: "Move playhead one frame (or Alt Shift ← / →)" },
                         { keys: "[ / ]", action: "Previous / next clip edge" },
                         { keys: "S", action: "Split the clip at the playhead" },
                         { keys: "X", action: "Remove the clip" },
